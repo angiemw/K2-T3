@@ -1,0 +1,1348 @@
+---
+title: 'K2: T1-T2-T3 Behavioral Data'
+author: "Angie Wang"
+date: "03/09/2021"
+output:
+  html_document:
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+
+# Load libraries.
+library(Hmisc)      # for correlation matrix
+library(psych)      # for descriptive statistics
+library(knitr)      # for knitting to pdf
+library(kableExtra) # for making pretty tables
+library(ggpubr)     # for arranging plots
+library(corrplot)   # for making correlogram
+library(forcats)    # for reordering factor levels
+library(stringi)    # for manipulating strings
+library(tidyverse)  # for data wrangling
+
+# Variable naming convention throughout this script:
+#     cc = CTOPP-2 Rapid Color Naming
+#     cl = CTOPP-2 Rapid Letter Naming
+#     ce = CTOPP-2 Elision
+#     swe = TOWRE-2 Sight Word Efficiency
+#     pde = TOWRE-2 Phonemic Decoding Efficiency
+#     wj = Woodcock Johnson IV Letter-Word Identification
+
+# Datafile name: "K2_BehavioralRaw_ThreeTimePoints_2021-02-18.csv"
+# The report on REDCap (where this is derived from) is called 
+# "K2_T3_BehavioralRawScores".
+
+```
+
+# Project Background
+
+The K-2 project is a multi-time point study with Kindergarteners, 1st graders, and 2nd graders (ages 5 to 8) at Synapse. This report outlines the behavioral data that we collected in Time 1 (in-person), Time 2 (remote), and Time 3 (remote).
+
+| T1 | T2 | T3 |
+|-|-|-|
+| Oct - Dec 2019 (beginning of school year) | May - Jun 2020 (end of school year) | Nov 2020 - Feb 2021 (beginning of school year) |
+| In-person | Remote, via Zoom | Remote, via Zoom |
+
+```{r load data, include=FALSE}
+# Import the data from the .csv file exported from REDCap.
+# The datafile should be in the same folder as this script.
+
+# Get current script path and set it as the working directory.
+path <- getwd()
+setwd(path)
+
+# Read the raw csv file (make sure the file name matches the name that's
+# in the code). Rename columns and add new columns. Then reorder grades (factors).
+data_raw <- read_csv("K2_BehavioralRaw_ThreeTimePoints_2021-02-18.csv", 
+                 col_names = TRUE, na = c("", "NA", "N/A")) %>% 
+  
+  rename(pid = participant_id, 
+         t1_grade = k2_grade,
+         t1_months = k2_grade_months,
+         t1_cc = ctopp_color_raw,
+         t1_cl = ctopp_lttr_raw,
+         t1_swe = swe_raw2,
+         t1_pde = pde_raw_final,
+         t1_wj = wj_corr_final,
+         t2_grade = k2_t2_b_grade_year,
+         t2_months = k2_t2_b_grade_months,
+         t2_cc = k2_t2_b_color_raw,
+         t2_cl = k2_t2_b_lttr_raw,
+         t2_swe = k2_t2_b_swe_raw_fin,
+         t2_pde = k2_t2_b_pde_raw_fin,
+         t2_wj = k2_t2_b_wj_corr_fin,
+         t2_ce = k2_t2_b_elision_raw,
+         t3_grade = k2_t3_b_grade_year,
+         t3_months = k2_t3_b_grade_months,
+         t3_cc = k2_t3_b_color_raw,
+         t3_cl = k2_t3_b_lttr_raw,
+         t3_swe = k2_t3_b_swe_raw_fin,
+         t3_pde = k2_t3_b_pde_raw_fin,
+         t3_wj = k2_t3_b_wj_corr_fin,
+         t3_ce = k2_t3_b_elision_raw) %>%
+  
+  # add column for number of time points completed
+  select(pid, t1_grade, t2_grade, t3_grade, everything()) %>% 
+  mutate(times_tested = rowSums(!is.na(.[, 3:5]))) %>% 
+  
+  # add column to identify participants who only participated in time 3
+  mutate(t3_only = ifelse((is.na(t1_grade) & is.na(t2_grade)), 1, 0)) %>% 
+  
+  # collapse grade into one column
+  mutate(grade = coalesce(t1_grade, t2_grade)) %>% 
+  mutate(grade = if_else(t3_only == 0, grade, t3_grade)) %>% 
+  
+  # order grade as factors
+  mutate(grade = fct_relevel(grade, "K", "1", "2", "3")) %>% 
+  mutate(t1_grade = fct_relevel(t1_grade, "K", "1", "2")) %>% 
+  mutate(t2_grade = fct_relevel(t2_grade, "K", "1", "2")) %>% 
+  mutate(t3_grade = fct_relevel(t3_grade, "K", "1", "2", "3")) %>% 
+  
+  # add column for age calculated as a decimal value
+  mutate(t3_age = (k2_t3_b_age_years + (k2_t3_b_age_months/12) + (k2_t3_b_age_days/365)))
+
+# Drop extra columns.
+data <- data_raw %>% 
+  select(-c(t1_months, t2_months, t3_months, 
+            k2_t3_b_age_years, k2_t3_b_age_months, k2_t3_b_age_days)) %>% 
+  select(pid, grade, t1_grade, t2_grade, t3_grade, 
+         times_tested, t3_only, everything()) %>% 
+  select(-c(25:34))
+
+```
+
+<br><br><br>
+
+# Preprocessing
+
+* Check validity of T3 scores by inspecting in-session ratings and notes. Note that this has not been done with T1 and T2 scores yet.
+  * Decisions: Replaced BLC_210 T3 SWE score with NA.
+* Then calculate CTOPP Color, CTOPP Letter, and TOWRE scores as estimated items per minute ('rate').
+* Then calculate differences between time points(T2 - T1; T3 - T2; T3 - T1) using items per minute when available.
+* *TODO: Check T1 and T2 scores.*
+
+```{r look at validity of t3 scores, echo=F, warning=F}
+
+# 1 = Valid
+# 2 = Invalid
+# 3 = Unsure
+# 4 = Incomplete
+
+# Select subjects with tests that are anything other than valid.
+t3_check <- data_raw %>%
+  select(pid, t3_grade, k2_t3_b_colorvalid, k2_t3_b_lettervalid, 
+         k2_t3_b_swevalid, k2_t3_b_pdevalid, k2_t3_b_wjvalid, 
+         k2_t3_b_elisionvalid, k2_t3_b_notes) %>% 
+  filter(!is.na(t3_grade)) %>% 
+  filter_at(vars(k2_t3_b_colorvalid, k2_t3_b_lettervalid, k2_t3_b_swevalid, 
+              k2_t3_b_pdevalid, k2_t3_b_wjvalid, k2_t3_b_elisionvalid),
+            any_vars(. != 1))
+
+# Write to .csv and manually check and decide on this subset of subjects.
+write_excel_csv(t3_check, "t3_check.csv")
+
+# Decision: do not include tests rated as 2=Invalid or 4=Incomplete,
+# but keep 3=Unsure.
+
+t3_invalid <- t3_check %>% 
+  select(-c(k2_t3_b_notes, t3_grade)) %>% 
+  filter_at(vars(k2_t3_b_colorvalid, k2_t3_b_lettervalid, k2_t3_b_swevalid, 
+              k2_t3_b_pdevalid, k2_t3_b_wjvalid, k2_t3_b_elisionvalid),
+            any_vars(. %in% c(2, 4))) %>% 
+  select_if(function(x) any(x %in% c(2, 4)) || str_detect(x, 'BLC')) %>% 
+  mutate_each(funs(replace(., . %in% c(2, 4), 'invalid')), -pid)
+
+# Change BLC_210 SWE score to NA.
+data$t3_swe[which(data$pid == 'BLC_210')] <- NA
+
+```
+
+```{r calculate ctopp items per minute, include=FALSE}
+
+# Calculate an estimated items per minute for CTOPP Color and Letter. 
+# We are using this instead of raw score to match with the other tests 
+# where "bigger is better."
+
+# each subtest has 36 items
+# 36 items / raw score (sec) * 60 sec = x items
+
+data <- data %>% 
+  mutate(t1_cc_rate = (36 / t1_cc * 60),
+         t2_cc_rate = (36 / t2_cc * 60),
+         t3_cc_rate = (36 / t3_cc * 60),
+         t1_cl_rate = (36 / t1_cl * 60),
+         t2_cl_rate = (36 / t2_cl * 60),
+         t3_cl_rate = (36 / t3_cl * 60))
+
+```
+
+```{r calculate towre items per minute, include=FALSE}
+
+# Calculate an estimated items per minute for TOWRE scores.
+
+# raw score / 45 sec * 60 sec = x items
+
+data <- data %>% 
+  mutate(t1_swe_rate = (t1_swe / 45 * 60),
+         t2_swe_rate = (t2_swe / 45 * 60),
+         t3_swe_rate = (t3_swe / 45 * 60),
+         t1_pde_rate = (t1_pde / 45 * 60),
+         t2_pde_rate = (t2_pde / 45 * 60),
+         t3_pde_rate = (t3_pde / 45 * 60))
+
+```
+
+```{r calculate time point differences, include=FALSE}
+
+# Calculate differences between time points.
+
+data <- data %>% 
+  # t2 - t1:
+  mutate(cc_diff_t2_t1 = (t2_cc_rate - t1_cc_rate),
+         cl_diff_t2_t1 = (t2_cl_rate - t1_cl_rate),
+         swe_diff_t2_t1 = (t2_swe_rate - t1_swe_rate),
+         pde_diff_t2_t1 = (t2_pde_rate - t1_pde_rate),
+         wj_diff_t2_t1 = (t2_wj - t1_wj)) %>% 
+  # t3 - t2:
+  mutate(cc_diff_t3_t2 = (t3_cc_rate - t2_cc_rate),
+         cl_diff_t3_t2 = (t3_cl_rate - t2_cl_rate),
+         swe_diff_t3_t2 = (t3_swe_rate - t2_swe_rate),
+         pde_diff_t3_t2 = (t3_pde_rate - t2_pde_rate),
+         wj_diff_t3_t2 = (t3_wj - t2_wj),
+         ce_diff_t3_t2 = (t3_ce - t2_ce)) %>% 
+  # t3 - t1:
+  mutate(cc_diff_t3_t1 = (t3_cc_rate - t1_cc_rate),
+         cl_diff_t3_t1 = (t3_cl_rate - t1_cl_rate),
+         swe_diff_t3_t1 = (t3_swe_rate - t1_swe_rate),
+         pde_diff_t3_t1 = (t3_pde_rate - t1_pde_rate),
+         wj_diff_t3_t1 = (t3_wj - t1_wj))
+
+```
+
+# Rank Order Grouping
+
+Approach: Rank order group by subtest and grade. i.e. For each grade, split into three roughly even groups (top, middle, bottom terciles)
+
+TODO: account for students who did not participate in two time points?
+
+```{r rank order grouping function, echo=F}
+
+# This function takes in the full dataset and for the specified subtest, 
+# creates a column with the groups. 
+
+rank_order_group <- function(data, subtest, numtimes) {
+  
+  # Arguments:
+  #   data (dataframe)
+  #   subtest (string): column name identifying subtest in 'data' 
+  #   numtimes (list): number of time points completed
+  
+  # Returns: original dataframe with an added column for the groups 
+  
+  # rank based on t1 score within grade (worst to best)
+  data_ranked <- data %>% 
+    filter(times_tested %in% numtimes) %>% 
+    drop_na() %>% # drop participants without 3 time points for now
+    #drop_na({{subtest}}) %>%
+    select(pid, grade, {{subtest}}) %>% 
+    group_by(grade) %>% 
+    mutate(rank = rank(.data[[subtest]], ties.method = "random"))
+
+  rank_groups <- data_ranked %>% 
+    group_by(grade) %>% 
+    summarise(max = max(rank)) %>% 
+    mutate(group_size = max%/%3, remainder = max%%3) %>% 
+    rowwise() %>% 
+    # append remainders
+    mutate(group_A = list(rep('A', group_size))) %>% 
+    mutate(group_B = if_else(remainder == 2, 
+                             list(rep('B', group_size + 1)),
+                             list(rep('B', group_size)))) %>% 
+    mutate(group_C = if_else(remainder == 2 | remainder == 1, 
+                             list(rep('C', group_size + 1)),
+                             list(rep('C', group_size)))) %>% 
+    mutate(combined = list(append(append(group_A, group_B), group_C))) %>%
+    select(combined) %>%
+    summarise(group = paste(combined))
+  
+  # create column name for this specific subtest
+  col_name <- paste0(subtest, '_group')
+  
+  # put new "group" column into main dataframe 
+  data <- data_ranked %>% 
+    arrange(grade, rank) %>% 
+    cbind(rank_groups) %>% 
+    rowwise() %>% 
+    mutate({{col_name}} := paste0(grade, group)) %>% 
+    ungroup() %>% 
+    select(c(pid, {{col_name}})) %>% 
+    right_join(., data, by='pid')
+
+  return(data)
+}
+
+```
+
+```{r rank order group by subtest, include=F}
+
+data_rank <- rank_order_group(data, 't1_cc_rate', c(3))
+data_rank <- rank_order_group(data_rank, 't1_cl_rate', c(3))
+data_rank <- rank_order_group(data_rank, 't1_swe_rate', c(3))
+data_rank <- rank_order_group(data_rank, 't1_pde_rate', c(3))
+data_rank <- rank_order_group(data_rank, 't1_wj', c(3))
+data_rank <- rank_order_group(data_rank, 't2_ce', c(3))
+
+```
+
+<br><br><br>
+
+# Participant Numbers
+
+**N = 94** students participated in **at least one time point**. 
+
+* Grade breakdown below is by **grade level at the first time point the participant participated in**. 
+  * Four 3rd graders participated in Time 3 only (we invited all K-3 students to participate, regardless of previous participation).
+* Note that individual assessments may show fewer students due to incomplete or invalid assessments in one or multiple time points. 
+
+### 3 points completed
+```{r participants with 3 time points, echo=F, message=F}
+
+data_3_points <- data %>% 
+  filter(times_tested == 3) %>% 
+  group_by(grade) %>% 
+  summarise(n = n())
+
+kable(data_3_points) %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T,
+                full_width = F,
+                position = "left",
+                font_size = 11)
+
+```
+
+### 2 points completed
+```{r participants with 2 time points, echo=F, message=F}
+
+data_2_points <- data %>% 
+  filter(times_tested == 2) %>% 
+  group_by(grade) %>% 
+  summarise(n = n())
+
+kable(data_2_points) %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T,
+                full_width = F,
+                position = "left",
+                font_size = 11)
+```
+
+### 1 point completed
+```{r participants with 1 time point, echo=F, message=F}
+
+data_1_points <- data %>% 
+  filter(times_tested == 1) %>% 
+  group_by(grade) %>% 
+  summarise(n = n())
+
+kable(data_1_points) %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T,
+                full_width = F,
+                position = "left",
+                font_size = 11)
+```
+
+<br><br><br>
+
+# Descriptive Statistics
+
+Based on *raw scores*.
+
+### Time 1
+```{r t1 descriptive stats, echo=FALSE, message=FALSE}
+
+# Time 1
+t1_desc <- data %>% 
+  select(t1_cc, t1_cl, t1_swe, t1_pde, t1_wj) %>%
+  describe() 
+
+kable(t1_desc, digits = 3) %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T,
+                font_size = 11)
+
+```
+
+### Time 2
+```{r t2 descriptive stats, echo=FALSE, message=FALSE}
+
+# Time 2
+t2_desc <- data %>% 
+  select(t2_cc, t2_cl, t2_swe, t2_pde, t2_wj, t2_ce) %>%
+  describe() 
+
+kable(t2_desc, digits = 3) %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T,
+                font_size = 11)
+```
+
+### Time 3
+```{r display t2 stats, echo=F}
+
+# Time 3
+t3_desc <- data %>% 
+  select(t3_cc, t3_cl, t3_swe, t3_pde, t3_wj, t3_ce) %>%
+  describe() 
+
+kable(t3_desc, digits = 3) %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T,
+                font_size = 11)
+
+```
+
+#### Time 3 means by grade
+```{r calculate means by grade, echo=F}
+
+# Calculate means by grade for plotting.
+t3_means <- data %>%
+  select(t3_grade, t3_cc, t3_cc_rate, t3_cl, t3_cl_rate, 
+         t3_swe, t3_swe_rate, t3_pde, t3_pde_rate, t3_wj, t3_ce) %>% 
+  group_by(t3_grade) %>%
+  summarise_all("mean", na.rm=TRUE) %>% 
+  drop_na()
+
+kable(t3_means, digits = 3) %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T,
+                font_size = 11)
+
+```
+
+<br><br><br>
+
+# Looking at Time 3 Only
+
+**N = 68** students participated in Time 3.
+
+```{r t3 grade breakdown, echo=F, message=F}
+
+data %>% 
+  select(t3_grade) %>% 
+  drop_na(t3_grade) %>% 
+  group_by(t3_grade) %>% 
+  summarise(n = n()) %>% 
+  kable() %>%  
+  kable_styling(bootstrap_options = c("striped", "hover"),
+                fixed_thead = T, full_width = F,
+                position = "left", font_size = 11)
+```
+
+## By grade
+
+### CTOPP Rapid Color Naming
+
+Plot score as *items per minute*. Dotted lines on density plot are means by grade.
+
+```{r ctopp color plots, echo=F, fig.width=10, fig.height=5}
+
+# boxplot by t3 grade
+p_cc_b <- data %>% 
+  drop_na(t3_cc_rate) %>% 
+  ggplot(aes(x = t3_grade, y = t3_cc_rate)) +
+  geom_boxplot(aes(color = t3_grade)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=0.5, binwidth=1) +
+  ylim(20, 200) +
+  labs(title = "T3: CTOPP Color (N = 65)", 
+       x = "Grade in T3",
+       y = "Items per minute") +
+  theme_light()
+
+# density plot by t3 grade
+p_cc_d <- data %>% 
+  drop_na(t3_cc_rate) %>% 
+  ggplot(aes(x = t3_cc_rate, fill = t3_grade)) +
+  geom_density(alpha = 0.3) +
+  geom_vline(data = t3_means, 
+             aes(xintercept = t3_cc_rate, color = t3_grade),
+             linetype = "dashed") +
+  #xlim(20, 200) +
+  labs(title = "T3: CTOPP Color (N = 65)",
+       x = "Items per minute",
+       y = "Density") +
+  theme_classic()
+
+# arrange side by side in rendered html
+ggarrange(p_cc_b, p_cc_d, common.legend = TRUE, legend = "bottom")
+
+```
+
+### CTOPP Rapid Letter Naming
+
+Plot score as *items per minute*.
+
+```{r ctopp letter plots, echo=F, fig.width=10, fig.height=5}
+
+# boxplot by t3 grade
+p_cl_b <- data %>% 
+  drop_na(t3_cl_rate) %>% 
+  ggplot(aes(x = t3_grade, y = t3_cl_rate)) +
+  geom_boxplot(aes(color = t3_grade)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=0.5, binwidth=1) +
+  ylim(20, 200) +
+  labs(title = "T3: CTOPP Letter (N = 67)", 
+       x = "Grade in T3",
+       y = "Items per minute") +
+  theme_light()
+
+# density plot by t3 grade
+p_cl_d <- data %>% 
+  drop_na(t3_cl_rate) %>% 
+  ggplot(aes(x = t3_cl_rate, fill = t3_grade)) +
+  geom_density(alpha = 0.3) +
+  geom_vline(data = t3_means, 
+             aes(xintercept = t3_cl_rate, color = t3_grade),
+             linetype = "dashed") +
+  #xlim(20, 200) +
+  labs(title = "T3: CTOPP Letter (N = 67)",
+       x = "Items per minute",
+       y = "Density") +
+  theme_classic()
+
+# arrange side by side in rendered html
+ggarrange(p_cl_b, p_cl_d, common.legend = TRUE, legend = "bottom")
+
+```
+
+### TOWRE Sight Word Efficiency
+
+Plot score as *items per minute*.
+
+```{r swe plots, echo=F, fig.width=10, fig.height=5}
+
+# boxplot by t3 grade
+p_swe_b <- data %>% 
+  drop_na(t3_swe_rate) %>% 
+  ggplot(aes(x = t3_grade, y = t3_swe_rate)) +
+  geom_boxplot(aes(color = t3_grade)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=0.5, binwidth=1) +
+  #ylim(0, 125) +
+  labs(title = "T3: TOWRE SWE (N = 68)", 
+       x = "Grade in T3",
+       y = "Items per minute") +
+  theme_light()
+
+# density plot by t3 grade
+p_swe_d <- data %>% 
+  drop_na(t3_swe_rate) %>% 
+  ggplot(aes(x = t3_swe_rate, fill = t3_grade)) +
+  geom_density(alpha = 0.3) +
+  geom_vline(data = t3_means, 
+             aes(xintercept = t3_swe_rate, color = t3_grade),
+             linetype = "dashed") +
+  labs(title = "T3: TOWRE SWE (N = 68)",
+       x = "Items per minute",
+       y = "Density") +
+  theme_classic()
+
+# arrange side by side in rendered html
+ggarrange(p_swe_b, p_swe_d, common.legend = TRUE, legend = "bottom")
+
+```
+
+### TOWRE Phonemic Decoding Efficiency
+
+Plot score as *items per minute*.
+
+```{r pde plots, echo=F, fig.width=10, fig.height=5}
+
+# boxplot by t3 grade
+p_pde_b <- data %>% 
+  drop_na(t3_pde_rate) %>% 
+  ggplot(aes(x = t3_grade, y = t3_pde_rate)) +
+  geom_boxplot(aes(color = t3_grade)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=0.5, binwidth=1) +
+  #ylim(0, 125) +
+  labs(title = "T3: TOWRE PDE (N = 66)", 
+       x = "Grade in T3",
+       y = "Items per minute") +
+  theme_light()
+
+# density plot by t3 grade
+p_pde_d <- data %>% 
+  drop_na(t3_pde_rate) %>% 
+  ggplot(aes(x = t3_pde_rate, fill = t3_grade)) +
+  geom_density(alpha = 0.3) +
+  geom_vline(data = t3_means, 
+             aes(xintercept = t3_pde_rate, color = t3_grade),
+             linetype = "dashed") +
+  labs(title = "T3: TOWRE SWE (N = 66)",
+       x = "Items per minute",
+       y = "Density") +
+  theme_classic()
+
+# arrange side by side in rendered html
+ggarrange(p_pde_b, p_pde_d, common.legend = TRUE, legend = "bottom")
+
+```
+
+### W-J Letter-Word Identification
+
+Plot *raw scores*.
+
+```{r wj plots, echo=F, fig.width=10, fig.height=5}
+
+# boxplot by t3 grade
+p_wj_b <- data %>% 
+  drop_na(t3_wj) %>% 
+  ggplot(aes(x = t3_grade, y = t3_wj)) +
+  geom_boxplot(aes(color = t3_grade)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=0.5, binwidth=1) +
+  labs(title = "T3: W-J LWID (N = 68)", 
+       x = "Grade in T3",
+       y = "Raw Score") +
+  theme_light()
+
+# density plot by t3 grade
+p_wj_d <- data %>% 
+  drop_na(t3_wj) %>% 
+  ggplot(aes(x = t3_wj, fill = t3_grade)) +
+  geom_density(alpha = 0.3) +
+  geom_vline(data = t3_means, 
+             aes(xintercept = t3_wj, color = t3_grade),
+             linetype = "dashed") +
+  labs(title = "T3: W-J LWID (N = 68)",
+       x = "Raw Score",
+       y = "Density") +
+  theme_classic()
+
+# arrange side by side in rendered html
+ggarrange(p_wj_b, p_wj_d, common.legend = TRUE, legend = "bottom")
+
+```
+
+### CTOPP Elision
+
+Plot *raw scores*.
+
+```{r ctopp elision plots, echo=F, fig.width=10, fig.height=5}
+
+# boxplot by t3 grade
+p_ce_b <- data %>% 
+  drop_na(t3_ce) %>% 
+  ggplot(aes(x = t3_grade, y = t3_ce)) +
+  geom_boxplot(aes(color = t3_grade)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=0.3, binwidth=1) +
+  labs(title = "T3: CTOPP Elision (N = 68)", 
+       x = "Grade in T3",
+       y = "Raw Score") +
+  theme_light()
+
+# density plot by t3 grade
+p_ce_d <- data %>% 
+  drop_na(t3_ce) %>% 
+  ggplot(aes(x = t3_ce, fill = t3_grade)) +
+  geom_density(alpha = 0.3) +
+  geom_vline(data = t3_means, 
+             aes(xintercept = t3_ce, color = t3_grade),
+             linetype = "dashed") +
+  labs(title = "T3: CTOPP Elision (N = 68)",
+       x = "Raw Score",
+       y = "Density") +
+  theme_classic()
+
+# arrange side by side in rendered html
+ggarrange(p_ce_b, p_ce_d, common.legend = TRUE, legend = "bottom")
+
+```
+
+## By age
+
+```{r cc and cl scatterplots, echo=F, message=F, fig.width=10, fig.height=5}
+
+# t3 ctopp color scatter (x = age, y = rate)
+p_cc_s <- data %>% 
+  drop_na(t3_cc_rate) %>% 
+  ggplot(aes(x = t3_age, y = t3_cc_rate)) + 
+  geom_point(aes(color = t3_grade)) +
+  geom_smooth(method = "lm", se = T, linetype = "solid", color = "grey") +
+  scale_x_continuous(breaks = seq(5, 9.5, by = 0.5)) +
+  ylim(20, 200) +
+  labs(title = "T3: CTOPP Color", 
+       x = "Age",
+       y = "Items per minute") +
+  theme_light()
+
+# t3 ctopp letter scatter (x = age, y = rate)
+p_cl_s <- data %>% 
+  drop_na(t3_cl_rate) %>% 
+  ggplot(aes(x = t3_age, y = t3_cl_rate)) + 
+  geom_point(aes(color = t3_grade)) +
+  geom_smooth(method = "lm", se = T, linetype = "solid", color = "grey") +
+  scale_x_continuous(breaks = seq(5, 9.5, by = 0.5)) +
+  ylim(20, 200) +
+  labs(title = "T3: CTOPP Letter", 
+       x = "Age",
+      y = "Items per minute") +
+  theme_light()
+
+# arrange plots side by side
+ggarrange(p_cc_s, p_cl_s, common.legend = TRUE, legend = "bottom")
+
+```
+
+```{r color and letter linear regression with age, echo=F}
+
+# t3 ctopp color (rate ~ age)
+lm_cc <- lm(t3_cc_rate ~ t3_age, data)
+print(summary(lm_cc))
+
+# t3 ctopp letter (rate ~ age)
+lm_cl <- lm(t2_cl_rate ~ t3_age, data)
+print(summary(lm_cl))
+
+```
+
+```{r towre scatterplots, echo=F, message=F, fig.width=10, fig.height=5}
+
+# t3 swe scatter (x = age, y = rate)
+p_swe_s <- data %>% 
+  drop_na(t3_swe_rate) %>% 
+  ggplot(aes(x = t3_age, y = t3_swe_rate)) + 
+  geom_point(aes(color = t3_grade)) +
+  geom_smooth(method = "lm", se = T, linetype = "solid", color = "grey") +
+  scale_x_continuous(breaks = seq(5, 9.5, by = 0.5)) +
+  labs(title = "T3: SWE", 
+       x = "Age",
+       y = "Items per minute") +
+  theme_light()
+
+# t3 pde scatter (x = age, y = rate)
+p_pde_s <- data %>% 
+  drop_na(t3_pde_rate) %>% 
+  ggplot(aes(x = t3_age, y = t3_pde_rate)) + 
+  geom_point(aes(color = t3_grade)) +
+  geom_smooth(method = "lm", se = T, linetype = "solid", color = "grey") +
+  scale_x_continuous(breaks = seq(5, 9.5, by = 0.5)) +
+  labs(title = "T3: PDE", 
+       x = "Age",
+      y = "Items per minute") +
+  theme_light()
+
+# arrange plots side by side
+ggarrange(p_swe_s, p_pde_s, common.legend = TRUE, legend = "bottom")
+
+```
+
+```{r towre linear regression with age, echo=F}
+
+# t3 swe (raw ~ age)
+lm_swe <- lm(t3_swe_rate ~ t3_age, data)
+print(summary(lm_swe))
+
+# t3 pde (raw ~ age)
+lm_pde <- lm(t3_pde_rate ~ t3_age, data)
+print(summary(lm_pde))
+
+```
+
+```{r wj and elision scatterplots, echo=F, message=F, fig.width=10, fig.height=5}
+
+# t3 wj scatter (x = age, y = raw)
+p_wj_s <- data %>% 
+  drop_na(t3_wj) %>% 
+  ggplot(aes(x = t3_age, y = t3_wj)) + 
+  geom_point(aes(color = t3_grade)) +
+  geom_smooth(method = "lm", se = T, linetype = "solid", color = "grey") +
+  scale_x_continuous(breaks = seq(5, 9.5, by = 0.5)) +
+  labs(title = "T3: W-J LWID", 
+       x = "Age",
+       y = "Raw Score") +
+  theme_light()
+
+# t3 elision scatter (x = age, y = raw)
+p_ce_s <- data %>% 
+  drop_na(t3_ce) %>% 
+  ggplot(aes(x = t3_age, y = t3_ce)) + 
+  geom_point(aes(color = t3_grade)) +
+  geom_smooth(method = "lm", se = T, linetype = "solid", color = "grey") +
+  scale_x_continuous(breaks = seq(5, 9.5, by = 0.5)) +
+  labs(title = "T3: CTOPP Elision", 
+       x = "Age",
+       y = "Raw Score") +
+  theme_light()
+
+# arrange plots side by side
+ggarrange(p_wj_s, p_ce_s, common.legend = TRUE, legend = "bottom")
+
+```
+
+```{r wj and elision linear regression with age, echo=F}
+
+# t3 wj (raw ~ age)
+lm_wj <- lm(t3_wj ~ t3_age, data)
+print(summary(lm_wj))
+
+# t3 elision (raw ~ age)
+lm_ce <- lm(t3_ce ~ t3_age, data)
+print(summary(lm_ce))
+
+```
+
+# Correlations
+
+```{r corr, echo=F}
+
+data_corr <- data %>% 
+  mutate(t1_cc_flip = -1 * t1_cc,
+         t1_cl_flip = -1 * t1_cl,
+         t2_cc_flip = -1 * t2_cc,
+         t2_cl_flip = -1 * t2_cl,
+         t3_cc_flip = -1 * t3_cc,
+         t3_cl_flip = -1 * t3_cl) %>% 
+  select(t1_cc_flip, t1_cl_flip, t1_swe, t1_pde, t1_wj,
+         t2_cc_flip, t2_cl_flip, t2_swe, t2_pde, t2_wj, t2_ce,
+         t3_cc_flip, t3_cl_flip, t3_swe, t3_pde, t3_wj, t3_ce) %>% 
+  cor(use = "na.or.complete")
+  
+
+colnames(data_corr) <- c("T1 Color", "T1 Letter", "T1 SWE", "T1 PDE", "T1 LWID",
+                         "T2 Color", "T2 Letter", "T2 SWE", "T2 PDE", "T2 LWID", "T2 Elision",
+                         "T3 Color", "T3 Letter", "T3 SWE", "T3 PDE", "T3 LWID", "T3 Elision")
+rownames(data_corr) <- c("T1 Color", "T1 Letter", "T1 SWE", "T1 PDE", "T1 LWID",
+                        "T2 Color", "T2 Letter", "T2 SWE", "T2 PDE", "T2 LWID", "T2 Elision",
+                        "T3 Color", "T3 Letter", "T3 SWE", "T3 PDE", "T3 LWID", "T3 Elision")
+
+pdf(file="overallCorrelations.pdf")
+corr_circle_all <- corrplot(data_corr, method = "circle", type="upper", tl.col = "black", tl.srt = 45)
+corr_number_all <- corrplot(data_corr, method = "number", type="upper", tl.col = "black", tl.srt = 45)
+corr_number_t2_t3 <- corrplot(data_corr[12:17, 6:17], method = "number", type="upper", tl.col = "black", tl.srt = 45)
+dev.off()
+
+```
+
+
+# Multi-timepoint
+
+```{r calculate all means, echo=F}
+
+# Calculate means
+all_means <- data %>%
+  filter(t3_only == 0) %>%  # filter out participants who only did T3
+  select(grade, t1_cc_rate, t1_cl_rate, t1_swe_rate, t1_pde_rate, t1_wj,
+         t2_cc_rate, t2_cl_rate, t2_swe_rate, t2_pde_rate, t2_wj, t2_ce,
+         t3_cc_rate, t3_cl_rate, t3_swe_rate, t3_pde_rate, t3_wj, t3_ce) %>% 
+  group_by(grade) %>%
+  summarise_all("mean", na.rm=TRUE) %>% 
+  gather(., test, mean, t1_cc_rate:t3_ce, factor_key=TRUE) %>%  # long format
+  mutate(timepoint = substr(test, 1, 2),
+         test = sub("_", "", substr(test, 4, 6))) %>% 
+  mutate(timepoint = recode_factor(timepoint, 
+                                   t1 = "Fall 2019", 
+                                   t2 = "Spring 2020", 
+                                   t3 = "Fall 2020"))
+
+```
+
+## W-J
+
+```{r wj average trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_wj_average <- all_means %>% 
+  filter(test == 'wj') %>% 
+  ggplot(., aes(x=timepoint, y=mean, fill=grade)) + 
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=2, alpha=0.8) +
+  #facet_grid(. ~ grade) +
+  geom_line(aes(group=grade))+
+  
+  labs(title = "Letter-Word Identification",
+       x = "Time Point",
+       y = "Average Score (items correct)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_wj_average
+ggsave("t3_wj_all_average_2.png", width = 8, height = 6)
+
+```
+
+## SWE
+
+```{r swe average trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_swe_average <- all_means %>% 
+  filter(test == 'swe') %>% 
+  ggplot(., aes(x=timepoint, y=mean, fill=grade)) + 
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=2, alpha=0.8) +
+  #facet_grid(. ~ grade) +
+  geom_line(aes(group=grade)) +
+  
+  labs(title = "Sight Word Efficiency",
+       x = "Time Point",
+       y = "Average Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_swe_average
+ggsave("t3_swe_all_average_2.png", width = 8, height = 6)
+
+```
+
+## PDE
+
+```{r pde average trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_pde_average <- all_means %>% 
+  filter(test == 'pde') %>% 
+  ggplot(., aes(x=timepoint, y=mean, fill=grade)) + 
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=2, alpha=0.8) +
+  #facet_grid(. ~ grade) +
+  geom_line(aes(group=grade), 
+            arrow = arrow(angle=30, length = unit(0.13, "cm"), type="open")) +
+  
+  labs(title = "Phonemic Decoding Efficiency",
+       x = "Time Point",
+       y = "Average Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_pde_average
+ggsave("t3_pde_all_average_2.png", width = 8, height = 6)
+
+```
+
+## CTOPP Elision
+
+```{r elision average trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_ce_average <- all_means %>% 
+  filter(test == 'ce') %>% 
+  ggplot(., aes(x=timepoint, y=mean, fill=grade)) + 
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=2, alpha=0.8) +
+  #facet_grid(. ~ grade) +
+  geom_line(aes(group=grade)) +
+  
+  labs(title = "Elision",
+       x = "Time Point",
+       y = "Average Score (items correct)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_ce_average
+ggsave("t3_ce_all_average_2.png", width = 8, height = 6)
+
+```
+
+## CTOPP RAN
+
+```{r ctopp ran average trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_ran_average <- all_means %>% 
+  filter(test == 'cc' | test == 'cl') %>% 
+  ggplot(., aes(x=timepoint, y=mean, fill=test)) + 
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=2, alpha=0.8) +
+  facet_grid(. ~ grade) +
+  geom_line(aes(group=test)) +
+  
+  labs(title = "Rapid Naming",
+       x = "Time Point",
+       y = "Average Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_discrete(name = "Subtest", labels = c("Color", "Letter")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_ran_average
+ggsave("t3_ran_all_average.png", width = 10, height = 6)
+
+```
+
+# Individual Trajectories
+
+```{r individual data in long format, echo=F}
+
+# Calculate means
+all_indiv <- data %>%
+  filter(times_tested != 1) %>%  # filter out participants who only did one timepoint
+  select(pid, grade, t1_cc_rate, t1_cl_rate, t1_swe_rate, t1_pde_rate, t1_wj,
+         t2_cc_rate, t2_cl_rate, t2_swe_rate, t2_pde_rate, t2_wj, t2_ce,
+         t3_cc_rate, t3_cl_rate, t3_swe_rate, t3_pde_rate, t3_wj, t3_ce) %>% 
+  gather(., test, score, t1_cc_rate:t3_ce, factor_key=TRUE) %>%  # long format
+  mutate(timepoint = substr(test, 1, 2),
+         test = sub("_", "", substr(test, 4, 6))) %>% 
+  mutate(timepoint = recode_factor(timepoint, 
+                                   t1 = "Fall 2019", 
+                                   t2 = "Spring 2020", 
+                                   t3 = "Fall 2020"))
+
+```
+
+## W-J 
+
+```{r wj individual trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_wj_indiv <- all_indiv %>% 
+  filter(test == 'wj' & !is.na(score)) %>% 
+  ggplot(., aes(x=timepoint, y=score, fill=grade, color=grade)) + 
+  facet_grid(. ~ grade) +
+  geom_line(aes(group=pid), alpha=0.5) +
+  
+  labs(title = "Letter-Word Identification",
+       x = "Time Point",
+       y = "Score (items correct)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  scale_color_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_wj_indiv
+ggsave("t3_wj_all_individual.png", width = 10, height = 6)
+
+```
+
+## SWE
+
+```{r swe individual trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_swe_indiv <- all_indiv %>% 
+  filter(test == 'swe' & !is.na(score)) %>% 
+  ggplot(., aes(x=timepoint, y=score, fill=grade, color=grade)) + 
+  facet_grid(. ~ grade) +
+  geom_line(aes(group=pid), alpha=0.5) +
+  
+  labs(title = "Sight Word Efficiency",
+       x = "Time Point",
+       y = "Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  scale_color_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_swe_indiv
+ggsave("t3_swe_all_individual.png", width = 10, height = 6)
+
+```
+
+## PDE
+
+```{r pde individual trajectories, echo=F, fig.width=10, fig.height=5}
+
+p_pde_indiv <- all_indiv %>% 
+  filter(test == 'pde' & !is.na(score)) %>% 
+  ggplot(., aes(x=timepoint, y=score, fill=grade, color=grade)) + 
+  facet_grid(. ~ grade) +
+  geom_line(aes(group=pid), alpha=0.5) +
+  
+  labs(title = "Phonemic Decoding Efficiency",
+       x = "Time Point",
+       y = "Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  scale_color_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_pde_indiv
+ggsave("t3_pde_all_individual.png", width = 10, height = 6)
+
+```
+
+# Growth
+
+```{r calculate all means, echo=F}
+
+# Calculate means
+all_means_growth <- data %>%
+  filter(t3_only == 0) %>%  # filter out participants who only did T3
+  select(grade, swe_diff_t2_t1, pde_diff_t2_t1, wj_diff_t2_t1, 
+         swe_diff_t3_t2, pde_diff_t3_t2, wj_diff_t3_t2) %>% 
+  group_by(grade) %>%
+  summarise_all("mean", na.rm=TRUE)
+
+all_means_growth <- all_means_growth %>% 
+  gather(., test, mean, swe_diff_t2_t1:wj_diff_t3_t2, factor_key=TRUE) %>%  # long format
+  mutate(segment = str_sub(test, -1, -1),
+         test = sub("_", "", substr(test, 1, 3))) %>% 
+  mutate(segment = recode_factor(segment, 
+                                 `2` = "T2 to T3",
+                                 `1` = "T1 to T2"),
+         test = recode_factor(test, 
+                              wj = "Word ID",
+                              swe = "Sight Word Fluency",
+                              pde = "Decoding Fluency")) 
+  
+
+```
+
+## WJ
+
+```{r wj growth}
+
+p_wj_growth <- all_means_growth %>% 
+  ggplot(., aes(x=test, y=mean, fill=segment)) +
+  geom_bar(stat = "identity")+
+  facet_grid(. ~ grade) +
+  
+  labs(title = "Average Growth",
+       x = "Subtest",
+       y = "Average growth between time points") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        axis.text = element_text(size = 10, angle = 45, hjust = 1),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+p_wj_growth
+ggsave("average_growth.png", width = 10, height = 6)
+
+```
+
+
+# Multi-timepoint with ranked grouping
+
+## SWE
+
+```{r swe dotplot, include=F, message=F, warning=F, fig.width=12, fig.height=8}
+
+# arrange data
+swe_group_avg <- data_rank %>% 
+  select(grade, t1_swe_rate, t2_swe_rate, t3_swe_rate, t1_swe_rate_group) %>% 
+  drop_na() %>% 
+  group_by(grade, t1_swe_rate_group) %>% 
+  summarise(t1_mean = mean(t1_swe_rate),
+            t2_mean = mean(t2_swe_rate),
+            t3_mean = mean(t3_swe_rate)) %>% 
+  # gather data to long format
+  gather(., time, mean, t1_mean:t3_mean, factor_key=TRUE) %>%
+  mutate(tercile = substr(t1_swe_rate_group, 2, 2))
+
+# plot dotplot
+p_swe_dotplot <- ggplot(swe_group_avg, aes(x=time, y=mean, fill=tercile)) + 
+  
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=1, alpha=0.8) +
+  facet_grid(. ~ grade) +
+  geom_line(aes(group=tercile), 
+            arrow = arrow(angle=30, length = unit(0.13, "cm"), type="open")) +
+  
+  labs(title = "Sight Word Efficiency (27 participants with 3 time points)",
+       x = "Time Point",
+       y = "Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 25),
+        axis.title.y = element_text(size = 25),
+        axis.text = element_text(size = 18),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+
+p_swe_dotplot
+#ggsave("t3_swe_dotplot.png")
+
+```
+
+## PDE
+
+```{r pde dotplot, include=F, message=F, warning=F, fig.width=12, fig.height=8}
+
+# arrange data
+pde_group_avg <- data_rank %>% 
+  select(grade, t1_pde_rate, t2_pde_rate, t3_pde_rate, t1_pde_rate_group) %>% 
+  drop_na() %>% 
+  group_by(grade, t1_pde_rate_group) %>% 
+  summarise(t1_mean = mean(t1_pde_rate),
+            t2_mean = mean(t2_pde_rate),
+            t3_mean = mean(t3_pde_rate)) %>% 
+  # gather data to long format
+  gather(., time, mean, t1_mean:t3_mean, factor_key=TRUE) %>%
+  mutate(tercile = substr(t1_pde_rate_group, 2, 2))
+
+# plot dotplot
+p_pde_dotplot <- ggplot(pde_group_avg, aes(x=time, y=mean, fill=tercile)) + 
+  
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=1, alpha=0.8) +
+  facet_grid(. ~ grade) +
+  geom_line(aes(group=tercile), 
+            arrow = arrow(angle=30, length = unit(0.13, "cm"), type="open")) +
+  
+  labs(title = "Phonemic Decoding Efficiency (27 participants with 3 time points)",
+       x = "Time Point",
+       y = "Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 25),
+        axis.title.y = element_text(size = 25),
+        axis.text = element_text(size = 18),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+
+p_pde_dotplot
+#ggsave("t3_pde_dotplot.png")
+
+```
+
+## W-J
+
+```{r wj dotplot, include=F, message=F, warning=F, fig.width=12, fig.height=8}
+
+# arrange data
+wj_group_avg <- data_rank %>% 
+  select(grade, t1_wj, t2_wj, t3_wj, t1_wj_group) %>% 
+  drop_na() %>% 
+  group_by(grade, t1_wj_group) %>% 
+  summarise(t1_mean = mean(t1_wj),
+            t2_mean = mean(t2_wj),
+            t3_mean = mean(t3_wj)) %>% 
+  # gather data to long format
+  gather(., time, mean, t1_mean:t3_mean, factor_key=TRUE) %>%
+  mutate(tercile = substr(t1_wj_group, 2, 2))
+
+# plot dotplot
+p_wj_dotplot <- ggplot(wj_group_avg, aes(x=time, y=mean, fill=tercile)) + 
+  
+  geom_dotplot(binaxis = 'y', stackdir = 'center', dotsize=1, alpha=0.8) +
+  facet_grid(. ~ grade) +
+  geom_line(aes(group=tercile), 
+            arrow = arrow(angle=30, length = unit(0.13, "cm"), type="open")) +
+  
+  labs(title = "W-J Letter-Word ID (27 participants with 3 time points)",
+       x = "Time Point",
+       y = "Score (number correct)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # school colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 25),
+        axis.title.y = element_text(size = 25),
+        axis.text = element_text(size = 18),
+        legend.title = element_text(size = 18),
+        legend.text = element_text(size = 18))
+
+
+p_wj_dotplot
+#ggsave("t3_wj_dotplot.png")
+
+```
+
+## CTOPP Color and Letter
+
+```{r towre overall dotplot, include=F, message=F, warning=F, fig.width=12, fig.height=8}
+
+# arrange data
+ctopp_overall <- data_rank %>% 
+  select(grade, t1_cc_rate, t2_cc_rate, t3_cc_rate, 
+         t1_cl_rate, t2_cl_rate, t3_cl_rate, times_tested) %>%
+  filter(grade != 3) %>%
+  filter(times_tested %in% c(2,3)) %>% 
+  group_by(grade) %>% 
+  summarise(t1_cc_mean = mean(t1_cc_rate, na.rm = TRUE),
+            t2_cc_mean = mean(t2_cc_rate, na.rm = TRUE),
+            t3_cc_mean = mean(t3_cc_rate, na.rm = TRUE),
+            t1_cl_mean = mean(t1_cl_rate, na.rm = TRUE),
+            t2_cl_mean = mean(t2_cl_rate, na.rm = TRUE),
+            t3_cl_mean = mean(t3_cl_rate, na.rm = TRUE)) %>% 
+  gather(key = "key", value = "mean", t1_cc_mean:t3_cl_mean) %>% 
+  separate(key, c("time", "subtest"))
+
+# plot dotplot
+p_ctopp_dotplot <- ggplot(ctopp_overall, aes(x = time, y = mean, fill = subtest)) + 
+  
+  geom_dotplot(binaxis = 'y', stackdir='center', dotsize = 2) +
+  facet_grid(. ~ grade) +
+  geom_line(aes(group = subtest), 
+            arrow = arrow(angle=30, length = unit(0.13, "cm"), type="open")) +
+  
+  labs(title = "CTOPP Rapid Naming",
+       x = "Time Point",
+       y = "Score (items per minute)") +
+  
+  theme_light() +
+  theme(strip.text.x = element_text(size=15, color="black", face="bold")) +
+  scale_fill_manual(values=c("#007dba", "#9ea2a2", "#000000")) + # synapse colors
+  theme(plot.title = element_text(hjust = 0.5, size = 25),
+        axis.title.x = element_text(size = 25),
+        axis.title.y = element_text(size = 25),
+        axis.text = element_text(size=18),
+        legend.title = element_text(size=18),
+        legend.text = element_text(size=18))
+
+p_ctopp_dotplot
+#ggsave("ctopp_dotplot.png")
+
+```
